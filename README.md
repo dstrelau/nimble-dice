@@ -2,7 +2,7 @@
 
 Dice notation parser, roller, and exact roll statistics for the
 [Nimble](https://nimblerpg.com) TTRPG. Used by
-[nimble.monster](https://nimble.monster).
+[nimble.nexus](https://nimble.nexus).
 
 ```ts
 import { calculateDiceStats, parseDiceNotation, simulateRoll } from "nimble-dice";
