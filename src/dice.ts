@@ -49,24 +49,11 @@
 const MAX_EXPLOSIONS = 4;
 const MAX_ADVANTAGE_DISADVANTAGE = 7;
 
-export const VALID_DIE_SIZES = [4, 6, 8, 10, 12, 20, 44, 66, 88, 100] as const;
+export const VALID_DIE_SIZES = [4, 6, 8, 10, 12, 20, 100, 44, 66, 88] as const;
 
-// Tens/ones sizes are only valid as their own notation (d66, d100), never as
-// a pool size in XdY or compound notation.
-const TENS_ONES_SIZES: readonly number[] = [44, 66, 88, 100];
-
-// Tens/ones rolls store the size of each individual die. d100 is percentile:
-// two d10s whose faces are the digits 0-9, so its dice are stored as size 10.
-// Other tens/ones dice (d44, d66, d88) use faces 1 through dieSize.
-function tensOnesFace(dieSize: number, roll: number): number {
-  return dieSize === 10 ? roll - 1 : roll;
-}
-
-// Read two kept faces as a two-digit number. Percentile reads 00 + 0 as 100,
-// which makes the range 1-100 with every outcome equally likely.
-function tensOnesValue(tens: number, ones: number): number {
-  return tens * 10 + ones || 100;
-}
+// Tens/ones sizes are only valid as their own dXX notation, never as a pool
+// size in XdY or compound notation.
+const TENS_ONES_SIZES: readonly number[] = [44, 66, 88];
 
 type DicePool = {
   numDice: number;
@@ -191,15 +178,37 @@ export function parseDiceNotation(notation: string): DiceRoll | null {
     };
   }
 
-  // Check for tensOnes notation: d44, d66, d88, and percentile d100 (also
-  // written 1d100). Each die is the size of one digit: d66 is two d6s, and
-  // d100 is two d10s.
-  const tensOnesMatch = trimmed.match(/^(?:d(44|66|88)|1?d100)([ad]\d*)?$/);
+  // Check for tensOnes notation: d44, d66, d88. Like compound rolls, they
+  // may add or subtract plain dice pools and end with a numeric modifier.
+  // Groups: 1=size 2=flags 3=dice pools 4=modifier sign 5=modifier digits
+  const tensOnesMatch = trimmed.match(
+    /^d(44|66|88)([ad]\d*)?((?:[+-]\d+d\d+)*)(?:([+-])(\d+))?$/
+  );
   if (tensOnesMatch) {
-    const dieSize = tensOnesMatch[1]
-      ? Number.parseInt(tensOnesMatch[1][0], 10)
-      : 10;
+    const dieSize = Number.parseInt(tensOnesMatch[1][0], 10);
     const flags = tensOnesMatch[2] || "";
+    const additionalDice: DicePool[] = Array.from(
+      tensOnesMatch[3].matchAll(/([+-])(\d+)d(\d+)/g),
+      ([, sign, count, size]) => ({
+        numDice: Number(count),
+        dieSize: Number(size),
+        ...(sign === "-" ? { subtract: true } : {}),
+      })
+    );
+    if (
+      additionalDice.some(
+        (pool) =>
+          pool.numDice <= 0 ||
+          !(VALID_DIE_SIZES as readonly number[]).includes(pool.dieSize) ||
+          TENS_ONES_SIZES.includes(pool.dieSize)
+      )
+    ) {
+      return null;
+    }
+    let modifier = tensOnesMatch[5] ? Number.parseInt(tensOnesMatch[5], 10) : 0;
+    if (tensOnesMatch[4] === "-") {
+      modifier = -modifier;
+    }
 
     let advantage = 0;
     let disadvantage = 0;
@@ -230,15 +239,19 @@ export function parseDiceNotation(notation: string): DiceRoll | null {
       return null;
     }
 
+    // Tens/ones rolls never miss or crit, so they are normal: a total of zero
+    // or less (e.g. d44-2d6) is an ordinary result, not a miss.
     return {
       numDice: 2,
       dieSize,
-      modifier: 0,
+      modifier,
       primaryMod: 0,
       vicious: false,
       advantage,
       disadvantage,
       tensOnes: true,
+      normal: true,
+      ...(additionalDice.length > 0 ? { additionalDice } : {}),
     };
   }
 
@@ -469,12 +482,11 @@ function combineProbabilityDistributions(
   return result;
 }
 
-// Calculate the distribution for tensOnes dice (d44, d66, d88, d100)
+// Calculate the distribution for tensOnes dice (d44, d66, d88)
 // These roll 2 dice and combine them as tens and ones digits
 // For example, rolling [3, 5] on d66 results in 35
-// d100 rolls two 0-9 dice, so [3, 5] is 35, [0, 7] is 7, and [0, 0] is 100
-// With advantage/disadvantage, we roll extra dice, drop the lowest/highest
-// digits, and use the remaining 2 dice in order as tens and ones
+// With advantage/disadvantage, we roll extra dice, drop the lowest/highest,
+// and use the remaining 2 dice in order as tens and ones
 function calculateTensOnesDistribution(
   dieSize: number,
   advantage: number,
@@ -487,10 +499,7 @@ function calculateTensOnesDistribution(
     const probability = 1 / (dieSize * dieSize);
     for (let tens = 1; tens <= dieSize; tens++) {
       for (let ones = 1; ones <= dieSize; ones++) {
-        const value = tensOnesValue(
-          tensOnesFace(dieSize, tens),
-          tensOnesFace(dieSize, ones)
-        );
+        const value = tens * 10 + ones;
         result.set(value, probability);
       }
     }
@@ -501,10 +510,8 @@ function calculateTensOnesDistribution(
   const totalDice = 2 + (advantage > 0 ? advantage : disadvantage);
 
   generateAllOutcomes(totalDice, dieSize, (currentRolls) => {
-    // Faces shift by the same amount on every die, so comparing faces keeps
-    // the same dice as comparing raw rolls.
-    const indexedRolls = currentRolls.map((roll, index) => ({
-      value: tensOnesFace(dieSize, roll),
+    const indexedRolls = currentRolls.map((value, index) => ({
+      value,
       index,
     }));
 
@@ -513,7 +520,7 @@ function calculateTensOnesDistribution(
     // First kept die is tens, second kept die is ones
     const tens = indexedRolls[keptIndices[0]].value;
     const ones = indexedRolls[keptIndices[1]].value;
-    const value = tensOnesValue(tens, ones);
+    const value = tens * 10 + ones;
 
     const probability = (1 / dieSize) ** totalDice;
     result.set(value, (result.get(value) || 0) + probability);
@@ -734,22 +741,6 @@ export function calculateProbabilityDistribution(
             disadvantage
           )
         : regularDiceDistribution(numDice, dieSize);
-
-    for (const pool of additionalDice) {
-      const poolDistribution = regularDiceDistribution(
-        pool.numDice,
-        pool.dieSize
-      );
-      // Reflect subtracted pool outcomes about zero before convolution:
-      // P(A - B = t) = sum over a - b = t of P(A = a) * P(B = b).
-      result = combineProbabilityDistributions(
-        result,
-        pool.subtract
-          ? new Map(Array.from(poolDistribution, ([value, p]) => [-value, p]))
-          : poolDistribution,
-        false
-      );
-    }
   } else if (advantage > 0 || disadvantage > 0) {
     result = calculateAdvantageDistribution(
       numDice,
@@ -773,6 +764,23 @@ export function calculateProbabilityDistribution(
     result = combineProbabilityDistributions(
       firstDieDistribution,
       restDistribution
+    );
+  }
+
+  // Only normal rolls (compound and tens/ones) have additional pools.
+  for (const pool of additionalDice) {
+    const poolDistribution = regularDiceDistribution(
+      pool.numDice,
+      pool.dieSize
+    );
+    // Reflect subtracted pool outcomes about zero before convolution:
+    // P(A - B = t) = sum over a - b = t of P(A = a) * P(B = b).
+    result = combineProbabilityDistributions(
+      result,
+      pool.subtract
+        ? new Map(Array.from(poolDistribution, ([value, p]) => [-value, p]))
+        : poolDistribution,
+      false
     );
   }
 
@@ -918,18 +926,14 @@ function simulateTensOnesRoll(
 ): { results: DieResult[]; total: number } {
   const results: DieResult[] = [];
   let total = 0;
-  // TensOnes dice (d44, d66, d88, d100) - roll 2 dice, first is tens, second
-  // is ones. d100 dice show their 0-9 digit.
+  // TensOnes dice (d44, d66, d88) - roll 2 dice, first is tens, second is ones
   // With advantage/disadvantage, roll extra dice and drop lowest/highest
   const totalDiceToRoll =
     2 + (advantage > 0 ? advantage : disadvantage > 0 ? disadvantage : 0);
   const allRolls: Array<DieResult & { originalIndex: number }> = [];
 
   for (let i = 0; i < totalDiceToRoll; i++) {
-    const value = tensOnesFace(
-      dieSize,
-      Math.floor(Math.random() * dieSize) + 1
-    );
+    const value = Math.floor(Math.random() * dieSize) + 1;
     allRolls.push({
       value,
       dieSize,
@@ -957,12 +961,16 @@ function simulateTensOnesRoll(
     }
 
     // First kept die is tens, second is ones
-    total = tensOnesValue(keptDice[0].value, keptDice[1].value);
+    const tens = keptDice[0].value;
+    const ones = keptDice[1].value;
+    total = tens * 10 + ones;
 
     results.push(...keptDice);
   } else {
     // Simple case: just roll 2 dice
-    total = tensOnesValue(allRolls[0].value, allRolls[1].value);
+    const tens = allRolls[0].value;
+    const ones = allRolls[1].value;
+    total = tens * 10 + ones;
 
     results.push(allRolls[0], allRolls[1]);
   }
@@ -1071,8 +1079,7 @@ function simulateNormalRoll(
   numDice: number,
   dieSize: number,
   advantage: number,
-  disadvantage: number,
-  additionalDice: DicePool[]
+  disadvantage: number
 ): { results: DieResult[]; total: number } {
   const results: DieResult[] = [];
   let total = 0;
@@ -1105,22 +1112,6 @@ function simulateNormalRoll(
       results.push({
         value: die.value,
         dieSize,
-        type: "regular",
-        isCrit: false,
-        isMiss: false,
-      });
-    }
-  }
-
-  for (const pool of additionalDice) {
-    for (let i = 0; i < pool.numDice; i++) {
-      const face = Math.floor(Math.random() * pool.dieSize) + 1;
-      // Signed contributions let the roll display show which dice subtract.
-      const value = pool.subtract ? -face : face;
-      total += value;
-      results.push({
-        value,
-        dieSize: pool.dieSize,
         type: "regular",
         isCrit: false,
         isMiss: false,
@@ -1228,8 +1219,7 @@ export function simulateRoll(diceRoll: DiceRoll): RollResult {
       numDice,
       dieSize,
       advantage,
-      disadvantage,
-      additionalDice
+      disadvantage
     ));
   } else if (advantage > 0 || disadvantage > 0) {
     ({ results, total } = simulateAdvantageRoll(
@@ -1247,6 +1237,23 @@ export function simulateRoll(diceRoll: DiceRoll): RollResult {
       vicious,
       primaryMod
     ));
+  }
+
+  // Only normal rolls (compound and tens/ones) have additional pools.
+  for (const pool of additionalDice) {
+    for (let i = 0; i < pool.numDice; i++) {
+      const face = Math.floor(Math.random() * pool.dieSize) + 1;
+      // Signed contributions let the roll display show which dice subtract.
+      const value = pool.subtract ? -face : face;
+      total += value;
+      results.push({
+        value,
+        dieSize: pool.dieSize,
+        type: "regular",
+        isCrit: false,
+        isMiss: false,
+      });
+    }
   }
 
   if (normal || total > 0) {
