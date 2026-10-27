@@ -968,6 +968,111 @@ describe("tensOnes dice (d44, d66, d88)", () => {
   });
 });
 
+describe("percentile dice (d100)", () => {
+  it.each(["d100", "1d100", "D100"])("parses %s as two d10s", (notation) => {
+    expect(parseDiceNotation(notation)).toEqual({
+      numDice: 2,
+      dieSize: 10,
+      modifier: 0,
+      primaryMod: 0,
+      vicious: false,
+      advantage: 0,
+      disadvantage: 0,
+      tensOnes: true,
+    });
+  });
+
+  it("parses advantage and disadvantage", () => {
+    expect(parseDiceNotation("d100a2")).toMatchObject({ advantage: 2 });
+    expect(parseDiceNotation("1d100d")).toMatchObject({ disadvantage: 1 });
+  });
+
+  it.each([
+    "2d100",
+    "d100+5",
+    "d100v",
+    "d100n",
+    "d100^1",
+    "d100+5c",
+    "d100a7",
+    "1d100+1d6",
+    "d1000",
+  ])("rejects %s", (notation) => {
+    expect(parseDiceNotation(notation)).toBeNull();
+  });
+
+  it("gives every value from 1 to 100 equal probability", () => {
+    const roll = parseDiceNotation("d100");
+    if (!roll) throw new Error("Failed to parse");
+    const dist = calculateProbabilityDistribution(roll);
+    expect([...dist.keys()].sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 100 }, (_, i) => i + 1)
+    );
+    for (const p of dist.values()) expect(p).toBeCloseTo(0.01, 12);
+    expect(calculateMissProbability(dist, roll)).toBe(0);
+    expect(calculateTotalAverageDamage(dist)).toBeCloseTo(50.5, 10);
+  });
+
+  it("keeps the highest digits with advantage", () => {
+    const roll = parseDiceNotation("d100a");
+    if (!roll) throw new Error("Failed to parse");
+    const dist = calculateProbabilityDistribution(roll);
+    // 1000 equally likely rolls of three digits. 100 needs two kept zeros,
+    // so all three digits are 0: 1/1000. 99 needs two 9s kept in order with
+    // the third digit dropped: [9, 9, x] for x <= 9 (ties drop the earlier
+    // die, but equal digits read the same) plus [9, x, 9] and [x, 9, 9] for
+    // x < 9: 10 + 9 + 9 = 28 rolls.
+    expect(dist.get(100)).toBeCloseTo(1 / 1000, 12);
+    expect(dist.get(99)).toBeCloseTo(28 / 1000, 12);
+    // 1 is 01: a kept 0 and 1, so the dropped die is a 0 that precedes them.
+    expect(dist.get(1)).toBeCloseTo(1 / 1000, 12);
+    const sum = [...dist.values()].reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1, 12);
+  });
+
+  it.each([
+    // Math.random values pick raw d10 rolls 1-10, which show digits 0-9.
+    [[3, 5], [2, 4], 24],
+    [[1, 8], [0, 7], 7],
+    [[10, 1], [9, 0], 90],
+    [[1, 1], [0, 0], 100],
+  ])("rolls raw %j as digits %j for %i", (raw, digits, total) => {
+    const parsed = parseDiceNotation("d100");
+    if (!parsed) throw new Error("Failed to parse");
+    const random = vi.spyOn(Math, "random");
+    for (const value of raw) {
+      random.mockReturnValueOnce((value - 0.5) / 10);
+    }
+    try {
+      const result = simulateRoll(parsed);
+      expect(result.results.map((die) => die.value)).toEqual(digits);
+      expect(result.results.every((die) => die.dieSize === 10)).toBe(true);
+      expect(result.total).toBe(total);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it("drops the lowest digit with advantage and keeps order", () => {
+    const parsed = parseDiceNotation("d100a");
+    if (!parsed) throw new Error("Failed to parse");
+    const random = vi.spyOn(Math, "random");
+    // Digits [7, 0, 3]: drop the 0, read 7 then 3.
+    for (const value of [8, 1, 4]) {
+      random.mockReturnValueOnce((value - 0.5) / 10);
+    }
+    try {
+      const result = simulateRoll(parsed);
+      expect(result.total).toBe(73);
+      expect(
+        result.results.filter((die) => die.type === "dropped")
+      ).toMatchObject([{ value: 0 }]);
+    } finally {
+      random.mockRestore();
+    }
+  });
+});
+
 describe("crit-only bonus (+Nc)", () => {
   it.each([
     ["1d10+5c", 0, 5],

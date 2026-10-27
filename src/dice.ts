@@ -49,7 +49,24 @@
 const MAX_EXPLOSIONS = 4;
 const MAX_ADVANTAGE_DISADVANTAGE = 7;
 
-export const VALID_DIE_SIZES = [4, 6, 8, 10, 12, 20, 44, 66, 88] as const;
+export const VALID_DIE_SIZES = [4, 6, 8, 10, 12, 20, 44, 66, 88, 100] as const;
+
+// Tens/ones sizes are only valid as their own notation (d66, d100), never as
+// a pool size in XdY or compound notation.
+const TENS_ONES_SIZES: readonly number[] = [44, 66, 88, 100];
+
+// Tens/ones rolls store the size of each individual die. d100 is percentile:
+// two d10s whose faces are the digits 0-9, so its dice are stored as size 10.
+// Other tens/ones dice (d44, d66, d88) use faces 1 through dieSize.
+function tensOnesFace(dieSize: number, roll: number): number {
+  return dieSize === 10 ? roll - 1 : roll;
+}
+
+// Read two kept faces as a two-digit number. Percentile reads 00 + 0 as 100,
+// which makes the range 1-100 with every outcome equally likely.
+function tensOnesValue(tens: number, ones: number): number {
+  return tens * 10 + ones || 100;
+}
 
 type DicePool = {
   numDice: number;
@@ -150,9 +167,7 @@ export function parseDiceNotation(notation: string): DiceRoll | null {
         ({ numDice, dieSize }) =>
           numDice <= 0 ||
           !(VALID_DIE_SIZES as readonly number[]).includes(dieSize) ||
-          dieSize === 44 ||
-          dieSize === 66 ||
-          dieSize === 88
+          TENS_ONES_SIZES.includes(dieSize)
       )
     ) {
       return null;
@@ -176,10 +191,14 @@ export function parseDiceNotation(notation: string): DiceRoll | null {
     };
   }
 
-  // Check for tensOnes notation: d44, d66, d88
-  const tensOnesMatch = trimmed.match(/^d(44|66|88)([ad]\d*)?$/);
+  // Check for tensOnes notation: d44, d66, d88, and percentile d100 (also
+  // written 1d100). Each die is the size of one digit: d66 is two d6s, and
+  // d100 is two d10s.
+  const tensOnesMatch = trimmed.match(/^(?:d(44|66|88)|1?d100)([ad]\d*)?$/);
   if (tensOnesMatch) {
-    const dieSize = Number.parseInt(tensOnesMatch[1][0], 10);
+    const dieSize = tensOnesMatch[1]
+      ? Number.parseInt(tensOnesMatch[1][0], 10)
+      : 10;
     const flags = tensOnesMatch[2] || "";
 
     let advantage = 0;
@@ -240,9 +259,7 @@ export function parseDiceNotation(notation: string): DiceRoll | null {
   // tensOnes dice are only valid in dXX notation (handled above), not XdYY
   if (
     !(VALID_DIE_SIZES as readonly number[]).includes(dieSize) ||
-    dieSize === 44 ||
-    dieSize === 66 ||
-    dieSize === 88
+    TENS_ONES_SIZES.includes(dieSize)
   ) {
     return null;
   }
@@ -452,11 +469,12 @@ function combineProbabilityDistributions(
   return result;
 }
 
-// Calculate the distribution for tensOnes dice (d44, d66, d88)
+// Calculate the distribution for tensOnes dice (d44, d66, d88, d100)
 // These roll 2 dice and combine them as tens and ones digits
 // For example, rolling [3, 5] on d66 results in 35
-// With advantage/disadvantage, we roll extra dice, drop the lowest/highest,
-// and use the remaining 2 dice in order as tens and ones
+// d100 rolls two 0-9 dice, so [3, 5] is 35, [0, 7] is 7, and [0, 0] is 100
+// With advantage/disadvantage, we roll extra dice, drop the lowest/highest
+// digits, and use the remaining 2 dice in order as tens and ones
 function calculateTensOnesDistribution(
   dieSize: number,
   advantage: number,
@@ -469,7 +487,10 @@ function calculateTensOnesDistribution(
     const probability = 1 / (dieSize * dieSize);
     for (let tens = 1; tens <= dieSize; tens++) {
       for (let ones = 1; ones <= dieSize; ones++) {
-        const value = tens * 10 + ones;
+        const value = tensOnesValue(
+          tensOnesFace(dieSize, tens),
+          tensOnesFace(dieSize, ones)
+        );
         result.set(value, probability);
       }
     }
@@ -480,8 +501,10 @@ function calculateTensOnesDistribution(
   const totalDice = 2 + (advantage > 0 ? advantage : disadvantage);
 
   generateAllOutcomes(totalDice, dieSize, (currentRolls) => {
-    const indexedRolls = currentRolls.map((value, index) => ({
-      value,
+    // Faces shift by the same amount on every die, so comparing faces keeps
+    // the same dice as comparing raw rolls.
+    const indexedRolls = currentRolls.map((roll, index) => ({
+      value: tensOnesFace(dieSize, roll),
       index,
     }));
 
@@ -490,7 +513,7 @@ function calculateTensOnesDistribution(
     // First kept die is tens, second kept die is ones
     const tens = indexedRolls[keptIndices[0]].value;
     const ones = indexedRolls[keptIndices[1]].value;
-    const value = tens * 10 + ones;
+    const value = tensOnesValue(tens, ones);
 
     const probability = (1 / dieSize) ** totalDice;
     result.set(value, (result.get(value) || 0) + probability);
@@ -895,14 +918,18 @@ function simulateTensOnesRoll(
 ): { results: DieResult[]; total: number } {
   const results: DieResult[] = [];
   let total = 0;
-  // TensOnes dice (d44, d66, d88) - roll 2 dice, first is tens, second is ones
+  // TensOnes dice (d44, d66, d88, d100) - roll 2 dice, first is tens, second
+  // is ones. d100 dice show their 0-9 digit.
   // With advantage/disadvantage, roll extra dice and drop lowest/highest
   const totalDiceToRoll =
     2 + (advantage > 0 ? advantage : disadvantage > 0 ? disadvantage : 0);
   const allRolls: Array<DieResult & { originalIndex: number }> = [];
 
   for (let i = 0; i < totalDiceToRoll; i++) {
-    const value = Math.floor(Math.random() * dieSize) + 1;
+    const value = tensOnesFace(
+      dieSize,
+      Math.floor(Math.random() * dieSize) + 1
+    );
     allRolls.push({
       value,
       dieSize,
@@ -930,16 +957,12 @@ function simulateTensOnesRoll(
     }
 
     // First kept die is tens, second is ones
-    const tens = keptDice[0].value;
-    const ones = keptDice[1].value;
-    total = tens * 10 + ones;
+    total = tensOnesValue(keptDice[0].value, keptDice[1].value);
 
     results.push(...keptDice);
   } else {
     // Simple case: just roll 2 dice
-    const tens = allRolls[0].value;
-    const ones = allRolls[1].value;
-    total = tens * 10 + ones;
+    total = tensOnesValue(allRolls[0].value, allRolls[1].value);
 
     results.push(allRolls[0], allRolls[1]);
   }

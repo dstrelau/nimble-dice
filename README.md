@@ -26,7 +26,8 @@ it does not accept.
 ### Basic rolls
 
 `XdY+Z` rolls X dice of size Y and adds modifier Z (or subtracts it, `-Z`).
-Valid die sizes are `d4`, `d6`, `d8`, `d10`, `d12`, and `d20`.
+Valid die sizes are `d4`, `d6`, `d8`, `d10`, `d12`, and `d20`; see below for
+`d44`, `d66`, `d88`, and `d100`.
 
 - `1d8`, `3d6+2`, `2d6-1`
 
@@ -74,14 +75,21 @@ must come last and cannot be used with normal, compound, or tens/ones rolls.
 - `1d10+2+5c`: +2 on every hit, plus another 5 on a crit.
 - `1d8v^1+2+3c`: everything together.
 
-### Tens/ones dice: `d44`, `d66`, `d88`
+### Tens/ones dice: `d44`, `d66`, `d88`, `d100`
 
 Roll two d4s, d6s, or d8s and read them as tens and ones digits, so `[3, 5]` on
-a `d66` is 35. These never miss or explode. They accept only advantage or
-disadvantage: roll extra dice, drop the lowest or highest, and read the two kept
-dice in their original order.
+a `d66` is 35.
 
-- `d66`, `d44a`, `d88d2`
+`d100` (or `1d100`) is percentile: two d10s whose faces are the digits 0–9, read
+as tens and ones. `[3, 5]` is 35, `[0, 7]` is 7, and `[0, 0]` is 100, so every
+result from 1 to 100 is equally likely. Rolled dice report their digit (0–9)
+with a `dieSize` of 10.
+
+These never miss or explode. They accept only advantage or disadvantage: roll
+extra dice, drop the lowest or highest, and read the two kept dice in their
+original order.
+
+- `d66`, `d44a`, `d88d2`, `d100`, `1d100a`
 
 ### Compound rolls
 
